@@ -268,10 +268,13 @@ async def run_single_test(
     # Validate intermediate steps
     step_validation_passed = True
     expected_steps = {
-        1: 30.6,  # weighted_sum: 26*0.1 + 20*0.2 + 36*0.25 + 42*0.3 + 16*0.15 = 30.6
-        2: 1.0,   # total_weights: 0.1 + 0.2 + 0.25 + 0.3 + 0.15 = 1.0
-        3: 30.6,  # mean: 30.6 / 1.0 = 30.6
-        4: 3060.0, # scaled: 30.6 * 100 = 3060.0
+        1: 27.939,    # weighted_sum = sum(value_i * weight_i)
+        2: 1.0,       # total_weights = sum(weights)
+        3: 27.939,    # baseline_mean = weighted_sum / total_weights
+        4: 23.3,      # value_range = max(values) - min(values)
+        5: 13.98,     # penalty = (value_range / total_weights) * 0.6
+        6: 13.959,    # adjusted_mean = baseline_mean - penalty
+        7: 1186.515,  # scaled_score = adjusted_mean * 85
     }
     
     # Check if required steps were submitted and are correct
@@ -280,7 +283,7 @@ async def run_single_test(
             step_validation_passed = False
             break
         submitted_val = submitted_steps[step_num]
-        if abs(float(submitted_val) - expected_val) > 0.1:  # Allow small tolerance
+        if abs(float(submitted_val) - expected_val) > 0.005:  # Allow tight tolerance
             step_validation_passed = False
             break
 
@@ -294,7 +297,7 @@ async def run_single_test(
             result_float = float(result)
             expected_float = float(expected_answer)
             # Allow small floating point differences (0.05 tolerance for rounding variations)
-            answer_correct = abs(result_float - expected_float) < 0.05
+            answer_correct = abs(result_float - expected_float) < 0.001
             # Both answer and steps must be correct
             success = answer_correct and step_validation_passed
         except (ValueError, TypeError):
@@ -363,48 +366,62 @@ async def main(concurrent: bool = True):
     
     # Task: Calculate weighted metric with intermediate step verification
     # Requires submitting each intermediate step for validation
-    prompt = """You are computing a weighted metric for a machine learning evaluation pipeline. Given feature values [26, 20, 36, 42, 16] and sample weights [0.1, 0.2, 0.25, 0.3, 0.15], calculate the normalized weighted average using this exact procedure.
+    prompt = """You are auditing a metric normalization routine for an ML evaluation pipeline. Work with feature values [18.5, 32.1, 27.4, 41.8, 29.6, 22.3] and sample weights [0.18, 0.12, 0.24, 0.16, 0.11, 0.19]. Follow the procedure below EXACTLY and submit each intermediate quantity for verification before moving on.
 
-You must execute these steps in this precise sequence and submit each intermediate result:
+You must execute these steps sequentially, without combining calculations, and submit each intermediate result immediately after it is computed:
 
-Step 1: Calculate weighted_sum = sum of (each value multiplied by its corresponding weight)
-  - Use python_expression to compute this
-  - Submit the result using submit_step with step_number=1
+Step 1: weighted_sum = sum of (each value multiplied by its corresponding weight).
+  - Use python_expression to compute this and print the numeric result.
+  - Submit the value using submit_step with step_number=1.
 
-Step 2: Calculate total_weights = sum of all weights
-  - Use python_expression to compute this
-  - Submit the result using submit_step with step_number=2
+Step 2: total_weights = sum of all weights.
+  - Use python_expression to compute this from the provided weights only.
+  - Submit using submit_step with step_number=2.
 
-Step 3: Calculate mean = weighted_sum divided by total_weights
-  - Use python_expression to compute this (divide the result from step 1 by the result from step 2)
-  - Submit the result using submit_step with step_number=3
+Step 3: baseline_mean = weighted_sum ÷ total_weights.
+  - Use ONLY the previously submitted Step 1 and Step 2 results (do not recompute the sums).
+  - Submit using submit_step with step_number=3.
 
-Step 4: Scale the mean by multiplying it by 100
-  - Use python_expression to compute this (multiply the result from step 3 by 100)
-  - Submit the result using submit_step with step_number=4
+Step 4: value_range = max(feature values) − min(feature values).
+  - Compute this using python_expression without reusing earlier expressions.
+  - Submit using submit_step with step_number=4.
 
-Step 5: Round the scaled result to exactly 1 decimal place using round(scaled_result, 1)
-  - Use python_expression to compute this (round the result from step 4 to 1 decimal)
-  - Submit the final result using submit_answer
+Step 5: penalty = (value_range ÷ total_weights) × 0.6.
+  - Use the stored results from Steps 2 and 4; do not recompute totals.
+  - Submit using submit_step with step_number=5.
+
+Step 6: adjusted_mean = baseline_mean − penalty.
+  - Use the numeric outputs from Steps 3 and 5 exclusively.
+  - Submit using submit_step with step_number=6.
+
+Step 7: scaled_score = adjusted_mean × 85.
+  - Multiply ONLY the Step 6 result by 85 (no recomputation).
+  - Submit using submit_step with step_number=7.
+
+Step 8: final_score = scaled_score rounded to exactly 3 decimal places using the Decimal module with quantize and ROUND_HALF_UP.
+  - Use python_expression to import Decimal, convert the Step 7 result to Decimal, and apply quantize(Decimal('0.001'), rounding=ROUND_HALF_UP).
+  - Convert the quantized Decimal to a float and submit it via submit_answer.
 
 Critical requirements:
-- You MUST submit steps 1-4 using submit_step before submitting the final answer
-- Steps must be executed and submitted in order - do not skip any step submissions
-- Step 4 (multiply by 100) must occur AFTER step 3 (division) - use the result from step 3
-- Use round(x, 1) with second argument = 1 (not 2 or any other value)
-- Submit all values as float numbers, not strings
-- Do not combine steps into a single expression - each step must be computed separately
+- You MUST submit Steps 1 through 7 with submit_step before calling submit_answer.
+- Steps must be executed and submitted strictly in order; no skipping or backtracking.
+- Do NOT recompute earlier results inside later steps; reuse the submitted values exactly.
+- All submitted numbers must be floats (not strings or Decimals) when sent to the tools.
+- Keep every python_expression focused on a single step; do not chain multiple step computations together.
+- Any deviation from the specified rounding method or precision will be treated as failure.
 
-Use python_expression for each calculation, then submit_step for steps 1-4, and finally submit_answer for step 5."""
+Use python_expression for each calculation, submit_step for Steps 1-7, and submit_answer for Step 8 only after completing all prior submissions."""
     
     # Expected calculation:
-    # Step 1: 26*0.1 + 20*0.2 + 36*0.25 + 42*0.3 + 16*0.15
-    #        = 2.6 + 4.0 + 9.0 + 12.6 + 2.4 = 30.6
-    # Step 2: 0.1 + 0.2 + 0.25 + 0.3 + 0.15 = 1.0
-    # Step 3: 30.6 / 1.0 = 30.6
-    # Step 4: 30.6 * 100 = 3060.0
-    # Step 5: round(3060.0, 1) = 3060.0
-    expected_answer = 3060.0
+    # Step 1: Σ(value_i * weight_i) = 27.939
+    # Step 2: Σ(weights) = 1.0
+    # Step 3: 27.939 / 1.0 = 27.939
+    # Step 4: 41.8 - 18.5 = 23.3
+    # Step 5: (23.3 / 1.0) * 0.6 = 13.98
+    # Step 6: 27.939 - 13.98 = 13.959
+    # Step 7: 13.959 * 85 = 1186.515
+    # Step 8: Decimal quantize to 3 decimals -> 1186.515
+    expected_answer = 1186.515
 
     execution_mode = "concurrently" if concurrent else "sequentially"
     print(f"Running {num_runs} test iterations {execution_mode}...")
