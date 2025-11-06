@@ -48,6 +48,19 @@ class SubmitAnswerToolResult(TypedDict):
     submitted: bool
 
 
+class SubmitStepToolResult(TypedDict):
+    step_number: int
+    value: Any
+    submitted: bool
+
+
+def submit_step_tool(step_number: int, value: Any) -> SubmitStepToolResult:
+    """
+    Tool for submitting intermediate step results for verification.
+    """
+    return {"step_number": step_number, "value": value, "submitted": True}
+
+
 def python_expression_tool(expression: str) -> PythonExpressionToolResult:
     """
     Tool that evaluates Python expressions using exec.
@@ -76,11 +89,11 @@ async def _fallback_agent_run(
     prompt: str,
     tool_handlers: dict[str, Callable[..., Any]],
     verbose: bool,
-) -> Any | None:
+) -> tuple[Any | None, dict[int, float]]:
     """Fallback when the Anthropic SDK is unavailable - returns None since we require API."""
     if verbose:
         print("Anthropic SDK unavailable - API is required for this task.")
-    return None
+    return (None, {})
 
 
 async def run_agent_loop(
@@ -90,7 +103,7 @@ async def run_agent_loop(
     max_steps: int = 20,
     model: str = "claude-3-5-haiku-latest",
     verbose: bool = True,
-) -> Any | None:
+) -> tuple[Any | None, dict[int, float]]:
     """
     Runs an agent loop with the given prompt and tools.
 
@@ -103,7 +116,7 @@ async def run_agent_loop(
         verbose: Whether to print detailed output (default True)
 
     Returns:
-        The submitted answer if submit_answer was called, otherwise None
+        Tuple of (submitted_answer, submitted_steps_dict) if submit_answer was called, otherwise (None, submitted_steps_dict)
     """
     if AsyncAnthropic is None:
         return await _fallback_agent_run(prompt, tool_handlers, verbose)
@@ -116,6 +129,9 @@ async def run_agent_loop(
         return await _fallback_agent_run(prompt, tool_handlers, verbose)
 
     messages: list[MessageParam] = [{"role": "user", "content": prompt}]
+    
+    # Track intermediate step submissions for validation
+    submitted_steps: dict[int, float] = {}
 
     for step in range(max_steps):
         if verbose:
@@ -170,6 +186,15 @@ async def run_agent_loop(
                             print("```")
                             print(result)
                             print("```")
+                    elif tool_name == "submit_step":
+                        assert isinstance(tool_input, dict) and "step_number" in tool_input and "value" in tool_input
+                        result = handler(tool_input["step_number"], tool_input["value"])
+                        step_num = result["step_number"]
+                        step_val = result["value"]
+                        try:
+                            submitted_steps[step_num] = float(step_val)
+                        except (ValueError, TypeError):
+                            pass
                     elif tool_name == "submit_answer":
                         assert isinstance(tool_input, dict) and "answer" in tool_input
                         result = handler(tool_input["answer"])
@@ -196,11 +221,12 @@ async def run_agent_loop(
 
             messages.append({"role": "user", "content": tool_results})
 
-            # If an answer was submitted, return it
+            # If an answer was submitted, return it with step tracking
             if submitted_answer is not None:
                 if verbose:
                     print(f"\nAgent submitted answer: {submitted_answer}")
-                return submitted_answer
+                # Return tuple: (answer, submitted_steps)
+                return (submitted_answer, submitted_steps)
         else:
             # No tool use, conversation might be complete
             if verbose:
@@ -209,7 +235,7 @@ async def run_agent_loop(
 
     if verbose:
         print(f"\nReached maximum steps ({max_steps}) without submitting answer.")
-    return None
+    return (None, submitted_steps)
 
 
 async def run_single_test(
@@ -224,13 +250,39 @@ async def run_single_test(
     if verbose:
         print(f"\n\n{'=' * 20} RUN {run_id}/{num_runs} {'=' * 20}")
 
-    result = await run_agent_loop(
+    result_data = await run_agent_loop(
         prompt=prompt,
         tools=tools,
         tool_handlers=tool_handlers,
-        max_steps=6,  # Limited steps to increase difficulty and force efficiency
+        max_steps=10,  # Increased to allow for step submissions
         verbose=verbose,
     )
+
+    # Unpack result - can be tuple (answer, steps) or just answer for backward compatibility
+    if isinstance(result_data, tuple):
+        result, submitted_steps = result_data
+    else:
+        result = result_data
+        submitted_steps = {}
+
+    # Validate intermediate steps
+    step_validation_passed = True
+    expected_steps = {
+        1: 30.6,  # weighted_sum: 26*0.1 + 20*0.2 + 36*0.25 + 42*0.3 + 16*0.15 = 30.6
+        2: 1.0,   # total_weights: 0.1 + 0.2 + 0.25 + 0.3 + 0.15 = 1.0
+        3: 30.6,  # mean: 30.6 / 1.0 = 30.6
+        4: 3060.0, # scaled: 30.6 * 100 = 3060.0
+    }
+    
+    # Check if required steps were submitted and are correct
+    for step_num, expected_val in expected_steps.items():
+        if step_num not in submitted_steps:
+            step_validation_passed = False
+            break
+        submitted_val = submitted_steps[step_num]
+        if abs(float(submitted_val) - expected_val) > 0.1:  # Allow small tolerance
+            step_validation_passed = False
+            break
 
     # Explicit comparison - handle None and type mismatches
     if result is None:
@@ -242,7 +294,9 @@ async def run_single_test(
             result_float = float(result)
             expected_float = float(expected_answer)
             # Allow small floating point differences (0.05 tolerance for rounding variations)
-            success = abs(result_float - expected_float) < 0.05
+            answer_correct = abs(result_float - expected_float) < 0.05
+            # Both answer and steps must be correct
+            success = answer_correct and step_validation_passed
         except (ValueError, TypeError):
             success = False
 
@@ -271,8 +325,25 @@ async def main(concurrent: bool = True):
             },
         },
         {
+            "name": "submit_step",
+            "description": "Submit an intermediate step result for verification. You must submit steps 1-4 before submitting the final answer.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "step_number": {
+                        "type": "integer",
+                        "description": "The step number (1, 2, 3, or 4)",
+                    },
+                    "value": {
+                        "description": "The numeric result of this step",
+                    },
+                },
+                "required": ["step_number", "value"],
+            },
+        },
+        {
             "name": "submit_answer",
-            "description": "Submit the final answer",
+            "description": "Submit the final answer (step 5 result)",
             "input_schema": {
                 "type": "object",
                 "properties": {"answer": {"description": "The final answer to submit"}},
@@ -283,35 +354,48 @@ async def main(concurrent: bool = True):
 
     tool_handlers = {
         "python_expression": python_expression_tool,
+        "submit_step": submit_step_tool,
         "submit_answer": submit_answer_tool,
     }
 
     # Run the test 10 times and track success rate
     num_runs = 10
     
-    # Task: Calculate weighted metric with strict sequential requirements and easy-to-miss details
-    # Multiple failure points to achieve 10-40% pass rate
+    # Task: Calculate weighted metric with intermediate step verification
+    # Requires submitting each intermediate step for validation
     prompt = """You are computing a weighted metric for a machine learning evaluation pipeline. Given feature values [26, 20, 36, 42, 16] and sample weights [0.1, 0.2, 0.25, 0.3, 0.15], calculate the normalized weighted average using this exact procedure.
 
-You must execute these steps in this precise sequence - each step must finish before the next starts:
+You must execute these steps in this precise sequence and submit each intermediate result:
+
 Step 1: Calculate weighted_sum = sum of (each value multiplied by its corresponding weight)
+  - Use python_expression to compute this
+  - Submit the result using submit_step with step_number=1
+
 Step 2: Calculate total_weights = sum of all weights
+  - Use python_expression to compute this
+  - Submit the result using submit_step with step_number=2
+
 Step 3: Calculate mean = weighted_sum divided by total_weights
+  - Use python_expression to compute this (divide the result from step 1 by the result from step 2)
+  - Submit the result using submit_step with step_number=3
+
 Step 4: Scale the mean by multiplying it by 100
+  - Use python_expression to compute this (multiply the result from step 3 by 100)
+  - Submit the result using submit_step with step_number=4
+
 Step 5: Round the scaled result to exactly 1 decimal place using round(scaled_result, 1)
+  - Use python_expression to compute this (round the result from step 4 to 1 decimal)
+  - Submit the final result using submit_answer
 
-Critical requirements that must be followed exactly - read each carefully:
-- All 5 steps must be executed sequentially in the order listed - do not combine or reorder any steps
-- Step 4 (multiply by 100) must occur AFTER step 3 (division) completes - this order is mandatory and cannot be changed
-- You must use round(x, 1) where the second argument is exactly 1 - do not use round(x, 2), round(x, 0), or any other precision value
-- Round the value from step 4 (after scaling by 100), not the value from step 3 (before scaling)
-- Submit the final result as a float number type, not a string or any other type
-- Do not use string formatting methods (f-strings, format(), %.1f, str()) for rounding - only use the round() function
-- The weighted_sum calculation must multiply each value-weight pair individually before summing - do not use any function that might alter the order of operations
+Critical requirements:
+- You MUST submit steps 1-4 using submit_step before submitting the final answer
+- Steps must be executed and submitted in order - do not skip any step submissions
+- Step 4 (multiply by 100) must occur AFTER step 3 (division) - use the result from step 3
+- Use round(x, 1) with second argument = 1 (not 2 or any other value)
+- Submit all values as float numbers, not strings
+- Do not combine steps into a single expression - each step must be computed separately
 
-Important warnings: The multiplication by 100 in step 4 is required and must happen after the division in step 3. Many implementations fail by: multiplying before dividing (wrong order), skipping the scaling step entirely, rounding the wrong intermediate value (step 3 instead of step 4), using incorrect rounding precision (2 decimals instead of 1), or submitting a string instead of a float. You must follow the exact 5-step sequence with proper ordering and rounding.
-
-Use python_expression to perform the calculations step-by-step, ensuring each step completes before moving to the next. Then submit the final rounded float result."""
+Use python_expression for each calculation, then submit_step for steps 1-4, and finally submit_answer for step 5."""
     
     # Expected calculation:
     # Step 1: 26*0.1 + 20*0.2 + 36*0.25 + 42*0.3 + 16*0.15
