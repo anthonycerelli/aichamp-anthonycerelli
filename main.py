@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from contextlib import redirect_stdout
 from io import StringIO
 from typing import Any, Callable, TypedDict
@@ -22,6 +23,19 @@ import re
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+def load_client() -> Any:
+    """Load and initialize Anthropic client with API key from environment."""
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "ANTHROPIC_API_KEY environment variable is not set. "
+            "Please set it in your .env file or environment."
+        )
+    if AsyncAnthropic is None:
+        raise ImportError("anthropic package is not installed")
+    return AsyncAnthropic(api_key=api_key)
 
 
 class PythonExpressionToolResult(TypedDict):
@@ -139,16 +153,27 @@ async def run_agent_loop(
     if AsyncAnthropic is None:
         return await _fallback_agent_run(prompt, tool_handlers, verbose)
 
-    client = AsyncAnthropic()
+    try:
+        client = load_client()
+    except (ValueError, ImportError) as e:
+        if verbose:
+            print(f"Failed to initialize Anthropic client: {e}")
+        return await _fallback_agent_run(prompt, tool_handlers, verbose)
+
     messages: list[MessageParam] = [{"role": "user", "content": prompt}]
 
     for step in range(max_steps):
         if verbose:
             print(f"\n=== Step {step + 1}/{max_steps} ===")
 
-        response = await client.messages.create(
-            model=model, max_tokens=1000, tools=tools, messages=messages
-        )
+        try:
+            response = await client.messages.create(
+                model=model, max_tokens=1000, tools=tools, messages=messages
+            )
+        except Exception as e:
+            if verbose:
+                print(f"API call failed: {e}")
+            return None
 
         # Track if we need to continue
         has_tool_use = False
