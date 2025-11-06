@@ -231,3 +231,8 @@ weights_a = [round(random.uniform(0.02, 0.15), 6) for _ in range(30)]
 - Anthropic API key
 - `anthropic` package
 - `python-dotenv` package
+
+## Credits
+
+- **Codex**: Initial discovery of codebase and initial setup/context
+- **Cursor**: Generated README documentation and created datasets A and B
