@@ -1,0 +1,17 @@
+Expected calculation (based on larger CSV datasets with 18 records each):
+Step 1: weighted_sum_A = 26.7925543
+Step 2: total_weights_A = 1.0
+Step 3: baseline_mean_A = 26.7925543
+Step 4: weighted_sum_B = 19.2393817
+Step 5: total_weights_B = 0.9999
+Step 6: baseline_mean_B = 19.24130583058306
+Step 7: mean_difference = abs(26.7925543 - 19.24130583058306) = 7.55124846941694
+Step 8: 7.551 > 5.0 = True -> Use Dataset A
+Step 9: value_range_A = 31.218
+Step 10: penalty_A = (31.218 / 1.0) * 0.6 = 18.7308
+Step 11: adjusted_mean_A = 26.7925543 - 18.7308 = 8.0617543
+Step 12: scaled_score = 8.0617543 * 85 = 685.2491155
+Step 13: variance_adjustment = (685.2491155 / 100) * 2.5 = 17.1312278875
+Step 14: final_adjusted = 685.2491155 - 17.1312278875 = 668.1178876125
+Step 15: Decimal quantize to 3 decimals -> 668.118
+

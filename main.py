@@ -9,20 +9,19 @@ from typing import Any, Callable, TypedDict
 try:
     from anthropic import AsyncAnthropic
     from anthropic.types import MessageParam, ToolUnionParam
-except ImportError:  # pragma: no cover - handled at runtime
-    AsyncAnthropic = None  # type: ignore[assignment]
-    MessageParam = dict  # type: ignore[misc, assignment]
-    ToolUnionParam = dict  # type: ignore[misc, assignment]
+except ImportError:
+    AsyncAnthropic = None
+    MessageParam = dict
+    ToolUnionParam = dict
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - handled at runtime
+except ImportError:
     def load_dotenv(*_args: Any, **_kwargs: Any) -> bool:
         return False
 
 import re
 
-# Load environment variables from .env file
 load_dotenv()
 
 
@@ -130,15 +129,12 @@ async def run_agent_loop(
         return await _fallback_agent_run(prompt, tool_handlers, verbose)
 
     messages: list[MessageParam] = [{"role": "user", "content": prompt}]
-    
-    # Track intermediate step submissions for validation
     submitted_steps: dict[int, float] = {}
 
     for step in range(max_steps):
         if verbose:
             print(f"\n=== Step {step + 1}/{max_steps} ===")
 
-        # Retry logic with exponential backoff for rate limits
         max_retries = 3
         retry_delay = 1.0
         for retry in range(max_retries):
@@ -146,10 +142,9 @@ async def run_agent_loop(
                 response = await client.messages.create(
                     model=model, max_tokens=800, tools=tools, messages=messages
                 )
-                break  # Success, exit retry loop
+                break
             except Exception as e:
                 error_str = str(e)
-                # Check if it's a rate limit error (429) - check error message and status code
                 is_rate_limit = (
                     "429" in error_str or 
                     "rate_limit" in error_str.lower() or
@@ -159,7 +154,7 @@ async def run_agent_loop(
                 
                 if is_rate_limit:
                     if retry < max_retries - 1:
-                        wait_time = retry_delay * (2 ** retry)  # Exponential backoff: 1s, 2s, 4s
+                        wait_time = retry_delay * (2 ** retry)
                         if verbose:
                             print(f"Rate limit hit, waiting {wait_time:.1f}s before retry {retry + 1}/{max_retries}")
                         await asyncio.sleep(wait_time)
@@ -169,17 +164,14 @@ async def run_agent_loop(
                             print(f"Rate limit exceeded after {max_retries} retries, falling back")
                         return await _fallback_agent_run(prompt, tool_handlers, verbose)
                 else:
-                    # Other errors - fall back immediately
                     if verbose:
                         print(f"API call failed: {e}")
                     return await _fallback_agent_run(prompt, tool_handlers, verbose)
 
-        # Track if we need to continue
         has_tool_use = False
         tool_results = []
         submitted_answer = None
 
-        # Process the response
         for content in response.content:
             if content.type == "text":
                 if verbose:
@@ -192,11 +184,9 @@ async def run_agent_loop(
                     if verbose:
                         print(f"Using tool: {tool_name}")
 
-                    # Extract arguments based on tool
                     handler = tool_handlers[tool_name]
                     tool_input = content.input
 
-                    # Call the appropriate tool handler
                     if tool_name == "python_expression":
                         if not isinstance(tool_input, dict) or "expression" not in tool_input:
                             if verbose:
@@ -249,7 +239,6 @@ async def run_agent_loop(
                         result = handler(tool_input["answer"])
                         submitted_answer = result["answer"]
                     else:
-                        # Generic handler call
                         result = (
                             handler(**tool_input)
                             if isinstance(tool_input, dict)
@@ -264,20 +253,16 @@ async def run_agent_loop(
                         }
                     )
 
-        # If we have tool uses, add them to the conversation
         if has_tool_use:
             messages.append({"role": "assistant", "content": response.content})
 
             messages.append({"role": "user", "content": tool_results})
 
-            # If an answer was submitted, return it with step tracking
             if submitted_answer is not None:
                 if verbose:
                     print(f"\nAgent submitted answer: {submitted_answer}")
-                # Return tuple: (answer, submitted_steps)
                 return (submitted_answer, submitted_steps)
         else:
-            # No tool use, conversation might be complete
             if verbose:
                 print("\nNo tool use in response, ending loop.")
             break
@@ -303,59 +288,49 @@ async def run_single_test(
         prompt=prompt,
         tools=tools,
         tool_handlers=tool_handlers,
-        max_steps=100,  # Increased for complex multi-step task with ambiguous requirements 
-        verbose=True,  # for testing; to see models interactions
+        max_steps=100,
+        verbose=True,
     )
 
-    # Unpack result - can be tuple (answer, steps) or just answer for backward compatibility
     if isinstance(result_data, tuple):
         result, submitted_steps = result_data
     else:
         result = result_data
         submitted_steps = {}
 
-    # Validate intermediate steps (based on larger CSV datasets with 18 records each)
     step_validation_passed = True
     expected_steps = {
-        1: 26.7925543,    # weighted_sum_A = sum(value_i * weight_i) for Dataset A (from CSV)
-        2: 1.0,           # total_weights_A = sum(weights) for Dataset A
-        3: 26.7925543,    # baseline_mean_A = weighted_sum_A / total_weights_A
-        4: 19.2393817,    # weighted_sum_B = sum(value_i * weight_i) for Dataset B (from CSV)
-        5: 0.9999,        # total_weights_B = sum(weights) for Dataset B
-        6: 19.24130583058306,  # baseline_mean_B = weighted_sum_B / total_weights_B
-        7: 7.55124846941694,   # mean_difference = abs(baseline_mean_A - baseline_mean_B)
-        # Step 8 is conditional logic, no numeric submission (mean_difference > 5.0 -> Use Dataset A)
-        9: 31.218,        # value_range_A = max(values_A) - min(values_A) (using Dataset A since mean_difference > 5.0)
-        10: 18.7308,      # penalty_A = (value_range_A / total_weights_A) * 0.6
-        11: 8.0617543,    # adjusted_mean_A = baseline_mean_A - penalty_A
-        12: 685.2491155,  # scaled_score = adjusted_mean_A * 85
-        13: 17.1312278875, # variance_adjustment = (scaled_score / 100) * 2.5
-        14: 668.1178876125, # final_adjusted = scaled_score - variance_adjustment
+        1: 26.7925543,
+        2: 1.0,
+        3: 26.7925543,
+        4: 19.2393817,
+        5: 0.9999,
+        6: 19.24130583058306,
+        7: 7.55124846941694,
+        9: 31.218,
+        10: 18.7308,
+        11: 8.0617543,
+        12: 685.2491155,
+        13: 17.1312278875,
+        14: 668.1178876125,
     }
-    
-    # Check if required steps were submitted and are correct
+
     for step_num, expected_val in expected_steps.items():
         if step_num not in submitted_steps:
             step_validation_passed = False
             break
         submitted_val = submitted_steps[step_num]
-        # Allow tolerance for floating point precision (especially step 4: 23.3)
         if abs(float(submitted_val) - expected_val) > 0.01:
             step_validation_passed = False
             break
 
-    # Explicit comparison - handle None and type mismatches
     if result is None:
         success = False
     else:
-        # Compare with type checking - both should be numbers
         try:
-            # Convert both to float for comparison to handle int/float mismatches
             result_float = float(result)
             expected_float = float(expected_answer)
-            # Allow small floating point differences (0.05 tolerance for rounding variations)
             answer_correct = abs(result_float - expected_float) < 0.001
-            # Both answer and steps must be correct
             success = answer_correct and step_validation_passed
         except (ValueError, TypeError):
             success = False
@@ -378,7 +353,6 @@ async def run_single_test(
 
 
 async def main(concurrent: bool = True):
-    # Ensure CSV files exist in the current working directory
     csv_files = ['dataset_a.csv', 'dataset_b.csv']
     for csv_file in csv_files:
         if not os.path.exists(csv_file):
@@ -436,55 +410,37 @@ async def main(concurrent: bool = True):
         "submit_answer": submit_answer_tool,
     }
 
-    # Run the test 10 times and track success rate
     num_runs = 10
-    
-    # Task: Complex multi-dataset conditional metric calculation with ambiguous requirements
-    # Less explicit prompt to test model inference - model must infer calculation methods
-    prompt = """Audit a multi-dataset metric normalization routine. Read 'dataset_a.csv' and 'dataset_b.csv' (feature_value, sample_weight columns). Process sequentially, submit each intermediate result.
 
-Steps:
-1. Dataset A weighted sum, submit_step(1)
-2. Dataset A total weights, submit_step(2)
-3. Dataset A baseline mean from steps 1-2, submit_step(3)
-4. Dataset B weighted sum, submit_step(4)
-5. Dataset B total weights, submit_step(5)
-6. Dataset B baseline mean from steps 4-5, submit_step(6)
-7. Absolute difference between step 3 and step 6, submit_step(7)
-8. Decision: if step 7 > 5.0, use Dataset A for remaining steps; otherwise use Dataset B (no submission)
-9. Range for the selected dataset's feature values, submit_step(9)
-10. Penalty: step 9 divided by selected dataset's total weights, multiplied by 0.6, submit_step(10)
-11. Adjusted mean: selected dataset's baseline mean minus step 10, submit_step(11)
-12. Scaled score: step 11 multiplied by 85, submit_step(12)
-13. Variance adjustment: step 12 divided by 100, then multiplied by 2.5, submit_step(13)
-14. Final adjusted: step 12 minus step 13, submit_step(14)
-15. Normalize step 14 to 3 decimal places using Decimal quantize with ROUND_HALF_UP, convert to float, submit_answer
+    prompt = """
+        Audit a multi-dataset metric normalization routine. Read 'dataset_a.csv' and 'dataset_b.csv' (feature_value, sample_weight columns). Process sequentially, submit each intermediate result.
 
-Critical: Submit steps 1-7 and 9-14 in sequence. Use previously submitted step values where referenced. All submissions must be numeric floats."""
+        Steps:
+        1. Dataset A weighted sum, submit_step(1)
+        2. Dataset A total weights, submit_step(2)
+        3. Dataset A baseline mean from steps 1-2, submit_step(3)
+        4. Dataset B weighted sum, submit_step(4)
+        5. Dataset B total weights, submit_step(5)
+        6. Dataset B baseline mean from steps 4-5, submit_step(6)
+        7. Absolute difference between step 3 and step 6, submit_step(7)
+        8. Decision: if step 7 > 5.0, use Dataset A for remaining steps; otherwise use Dataset B (no submission)
+        9. Range for the selected dataset's feature values, submit_step(9)
+        10. Penalty: step 9 divided by selected dataset's total weights, multiplied by 0.6, submit_step(10)
+        11. Adjusted mean: selected dataset's baseline mean minus step 10, submit_step(11)
+        12. Scaled score: step 11 multiplied by 85, submit_step(12)
+        13. Variance adjustment: step 12 divided by 100, then multiplied by 2.5, submit_step(13)
+        14. Final adjusted: step 12 minus step 13, submit_step(14)
+        15. Normalize step 14 to 3 decimal places using Decimal quantize with ROUND_HALF_UP, convert to float, submit_answer
+
+        Critical: Submit steps 1-7 and 9-14 in sequence. Use previously submitted step values where referenced. All submissions must be numeric floats.
+        """
     
-    # Expected calculation (based on larger CSV datasets with 18 records each):
-    # Step 1: weighted_sum_A = 26.7925543
-    # Step 2: total_weights_A = 1.0
-    # Step 3: baseline_mean_A = 26.7925543
-    # Step 4: weighted_sum_B = 19.2393817
-    # Step 5: total_weights_B = 0.9999
-    # Step 6: baseline_mean_B = 19.24130583058306
-    # Step 7: mean_difference = abs(26.7925543 - 19.24130583058306) = 7.55124846941694
-    # Step 8: 7.551 > 5.0 = True -> Use Dataset A
-    # Step 9: value_range_A = 31.218
-    # Step 10: penalty_A = (31.218 / 1.0) * 0.6 = 18.7308
-    # Step 11: adjusted_mean_A = 26.7925543 - 18.7308 = 8.0617543
-    # Step 12: scaled_score = 8.0617543 * 85 = 685.2491155
-    # Step 13: variance_adjustment = (685.2491155 / 100) * 2.5 = 17.1312278875
-    # Step 14: final_adjusted = 685.2491155 - 17.1312278875 = 668.1178876125
-    # Step 15: Decimal quantize to 3 decimals -> 668.118
     expected_answer = 668.118
 
     execution_mode = "concurrently" if concurrent else "sequentially"
     print(f"Running {num_runs} test iterations {execution_mode}...")
     print("=" * 60)
 
-    # Create all test coroutines
     tasks = [
         run_single_test(
             run_id=i + 1,
@@ -493,44 +449,34 @@ Critical: Submit steps 1-7 and 9-14 in sequence. Use previously submitted step v
             tools=tools,
             tool_handlers=tool_handlers,
             expected_answer=expected_answer,
-            verbose=True,  # Enable verbose to see model interactions
+            verbose=True,
         )
         for i in range(num_runs)
     ]
 
-    # Run concurrently or sequentially based on the flag
     if concurrent:
-        # Create tasks from coroutines for proper concurrent execution
-        # Add small delay between task creation to avoid rate limits
         task_objects = []
         for i, task in enumerate(tasks):
             task_objects.append(asyncio.create_task(task))
-            # Stagger task starts slightly to reduce concurrent token usage
-            if i < len(tasks) - 1:  # Don't delay after last task
-                await asyncio.sleep(0.1)  # 100ms delay between task starts
-        
-        # Process results as they complete
+            if i < len(tasks) - 1:
+                await asyncio.sleep(0.1)
+
         results = []
         for completed_task in asyncio.as_completed(task_objects):
             result = await completed_task
             results.append(result)
     else:
-        # Run sequentially by awaiting each task in order
         results = []
         for task in tasks:
             result = await task
             results.append(result)
-            # Small delay between sequential requests to avoid rate limits
-            await asyncio.sleep(0.2)  # 200ms delay between requests
+            await asyncio.sleep(0.2)
 
-    # Count successes - explicitly check the success boolean
-    # Debug: print all results to verify
     successes = 0
     for run_id, success, result in results:
         if success is True:
             successes += 1
 
-    # Calculate and display pass rate
     pass_rate = (successes / num_runs) * 100
     print(f"\n{'=' * 60}")
     print("Test Results:")
@@ -542,6 +488,4 @@ Critical: Submit steps 1-7 and 9-14 in sequence. Use previously submitted step v
 
 
 if __name__ == "__main__":
-    # Set to True for concurrent execution, False for sequential execution
-    # Sequential is safer for rate limits (having rate limit errors in testing)
     asyncio.run(main(concurrent=True))
