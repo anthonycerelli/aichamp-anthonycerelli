@@ -6,6 +6,10 @@ from typing import Any, Callable, TypedDict
 
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam, ToolUnionParam
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class PythonExpressionToolResult(TypedDict):
